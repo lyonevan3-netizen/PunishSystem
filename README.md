@@ -1,4 +1,4 @@
-# PunishSystem 1.0.2
+# PunishSystem 1.0.4
 
 A rebuilt Paper-compatible punishment plugin for Minecraft 26.2, using Java 25, SQLite, configurable escalation and inventory-based staff menus.
 
@@ -35,7 +35,7 @@ gradle clean build
 
 The shaded plugin JAR will be created at:
 
-`build/libs/PunishSystem-1.0.2.jar`
+`build/libs/PunishSystem-1.0.4.jar`
 
 The build includes SQLite JDBC and relocates its package into the plugin namespace.
 
@@ -47,7 +47,7 @@ The repository workflow builds on pushes to `main` and can be started manually f
 
 1. Stop the test server.
 2. Back up `plugins/PunishSystem/` including `punishments.db` and `config.yml`.
-3. Replace the old plugin JAR with `PunishSystem-1.0.2.jar`.
+3. Replace the old plugin JAR with `PunishSystem-1.0.4.jar`.
 4. Keep the existing `plugins/PunishSystem/punishments.db` to preserve history.
 5. Start a staging server first and inspect the console for startup errors.
 6. Confirm the menus, permissions, punishments, expiry, mute and ban enforcement before production rollout.
@@ -88,6 +88,27 @@ The final step is capped: further offences use that final step again. The `setti
 
 Discord bot linking, nickname sync, evidence threads and channel logging are **not implemented in this core rebuild**. `/link` explicitly reports that the Discord bridge is not enabled. Those features are planned as a separate integration stage so a Discord outage cannot prevent Minecraft punishments from being recorded.
 
+## Offence-specific numbering and active-punishment protection (v1.0.4)
+
+- Offence numbers are calculated independently for each player, category and offence. The staff output distinguishes `Offence #N` from the unique database `Record #ID`.
+- A player cannot receive another active punishment for the same category/offence until the existing one expires or is revoked.
+- Different offences remain independent: an active Spamming mute does not block an Advertising punishment.
+- The offence menu displays an `ALREADY ACTIVE` entry with the current action and remaining duration when that exact offence is already active.
+- The final confirmation/issue path rechecks active status to prevent stale menus from issuing duplicate punishments.
+
 ## Testing status
 
 This source rebuild has been created from the uploaded project and reviewed for the identified history-query and GUI-routing defects. It has **not been compiled or tested on a Minecraft server in this environment**. The available environment has Java 21 and no Gradle installation, while this target requires Java 25. Do not treat this source ZIP as a tested production JAR.
+
+
+## Staff-only punishment notifications (v1.0.4)
+
+Punishment announcements are not sent to ordinary players. To let Helper and higher staff see in-game punishment notices, grant `punish.staff.notifications` to the LuckPerms `helper` group and ensure higher staff groups inherit it. For example:
+
+```text
+/lp group helper permission set punish.staff.notifications true
+```
+
+If your LuckPerms group names use different capitalization or naming, use your actual group name. The plugin checks the permission through Bukkit, so LuckPerms inheritance applies automatically.
+
+All offence selections now open a confirmation menu showing the target, offence, action, duration, and category before the punishment is issued.

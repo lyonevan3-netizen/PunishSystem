@@ -129,6 +129,26 @@ public final class PunishmentDatabase implements AutoCloseable {
         }
     }
 
+    /** Returns the current active punishment for this exact offence, if one exists. */
+    public synchronized Optional<Punishment> activeOffence(UUID player, String category, String offence) throws SQLException {
+        String sql = """
+            SELECT * FROM punishments
+            WHERE player_uuid=? AND category=? AND offence=?
+              AND status='ACTIVE' AND action!='WARN'
+              AND (duration_ms<0 OR expires_at>?)
+            ORDER BY issued_at DESC LIMIT 1
+            """;
+        try (PreparedStatement p = connection.prepareStatement(sql)) {
+            p.setString(1, player.toString());
+            p.setString(2, category.toLowerCase(Locale.ROOT));
+            p.setString(3, offence);
+            p.setLong(4, System.currentTimeMillis());
+            try (ResultSet r = p.executeQuery()) {
+                return r.next() ? Optional.of(read(r)) : Optional.empty();
+            }
+        }
+    }
+
     public synchronized List<Punishment> activeFor(UUID player, String action) throws SQLException {
         List<Punishment> result = new ArrayList<>();
         try (PreparedStatement p = connection.prepareStatement("""

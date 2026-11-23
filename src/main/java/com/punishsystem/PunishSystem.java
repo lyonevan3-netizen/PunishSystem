@@ -61,7 +61,7 @@ public final class PunishSystem extends JavaPlugin implements Listener {
         }, 20L, 20L * 60L);
 
         int count = punishments.definitions().values().stream().mapToInt(Map::size).sum();
-        getLogger().info("PunishSystem 1.0.2 enabled. Loaded " + count + " offence definitions.");
+        getLogger().info("PunishSystem 1.0.4 enabled. Loaded " + count + " offence definitions.");
     }
 
     @Override
@@ -185,6 +185,26 @@ public final class PunishSystem extends JavaPlugin implements Listener {
             if (!staff.hasPermission("punish.category.moderator")
                     && steps.getFirst().action().equals("BAN")) continue;
 
+            Optional<Punishment> activeOffence = getActiveOffenceQuietly(target, category, entry.getKey());
+            if (activeOffence.isPresent()) {
+                Punishment current = activeOffence.get();
+                String remaining = current.permanent() ? "Permanent"
+                        : PunishmentService.formatDuration(Math.max(60_000L,
+                        ((Math.max(0L, current.expiresAt() - System.currentTimeMillis()) + 59_999L) / 60_000L) * 60_000L));
+                inv.setItem(slot, item(Material.GRAY_DYE, "&8&l" + entry.getKey(),
+                        "&8&m--------------------",
+                        "&c&lALREADY ACTIVE",
+                        "&7This offence is already being punished.",
+                        "&bCurrent action &8» &f" + actionLabel(current.action()),
+                        "&bTime remaining &8» &f" + remaining,
+                        "&7Wait for this punishment to expire or be removed.",
+                        "&eClick for more information.",
+                        "&8&m--------------------"));
+                holder.mapOffence(slot, entry.getKey());
+                slot++;
+                continue;
+            }
+
             PunishmentStep next;
             try {
                 next = punishments.nextStep(target, category, entry.getKey());
@@ -230,9 +250,70 @@ public final class PunishSystem extends JavaPlugin implements Listener {
         staff.openInventory(inv);
     }
 
+    private void openConfirmation(Player staff, UUID target, String targetName, String category, String offence) {
+        String categoryPermission = category.equals("social") ? "punish.category.social" : "punish.category.moderator";
+        if (!staff.hasPermission(categoryPermission)) {
+            staff.sendMessage(message("no-permission"));
+            return;
+        }
+        try {
+            Optional<Punishment> active = database.activeOffence(target, category, offence);
+            if (active.isPresent()) {
+                staff.sendMessage(color("&c" + targetName + " already has an active punishment for &f" + offence
+                        + "&c. Wait until it expires or is removed."));
+                return;
+            }
+            PunishmentStep step = punishments.nextStep(target, category, offence);
+            if (step == null) {
+                staff.sendMessage(color("&cNo further escalation step is configured for this offence."));
+                return;
+            }
+            if (step.action().equals("BAN") && !staff.hasPermission("punish.category.moderator")) {
+                staff.sendMessage(color("&cYou do not have permission to issue bans."));
+                return;
+            }
+            MenuHolder holder = new MenuHolder(MenuHolder.Type.CONFIRM, target, targetName, category, null, 0);
+            holder.mapOffence(13, offence);
+            Inventory inv = inventory(holder, 27, "Confirm Punishment");
+            ItemStack filler = item(Material.GRAY_STAINED_GLASS_PANE, "&8 ");
+            for (int i = 0; i < inv.getSize(); i++) inv.setItem(i, filler);
+            String actionColour = switch (step.action()) {
+                case "BAN" -> "&c";
+                case "MUTE" -> "&b";
+                default -> "&e";
+            };
+            inv.setItem(13, item(Material.PAPER, "&c&lConfirm Details",
+                    "&8&m------------------------------",
+                    "&bPlayer &8» &f" + targetName,
+                    "&bOffence &8» &f" + offence,
+                    "&bAction &8» " + actionColour + "&l" + actionLabel(step.action()),
+                    "&bDuration &8» &f" + PunishmentService.formatDuration(step.durationMillis()),
+                    "&bCategory &8» &f" + titleCase(category),
+                    " ",
+                    "&eThis will permanently add to their offence history.",
+                    "&8&m------------------------------"));
+            inv.setItem(11, item(Material.LIME_WOOL, "&a&lCONFIRM PUNISHMENT",
+                    "&7Click to issue this punishment.", "&aThis action will be logged."));
+            inv.setItem(15, item(Material.RED_WOOL, "&c&lCANCEL",
+                    "&7Return to the offence list.", "&cNo punishment will be issued."));
+            staff.openInventory(inv);
+        } catch (SQLException ex) {
+            staff.sendMessage(color("&cCould not prepare punishment confirmation."));
+            getLogger().warning("Punishment confirmation failed: " + ex.getMessage());
+        }
+    }
+
     private int getCountQuietly(UUID target, String category, String offence) {
         try { return punishments.offenceCount(target, category, offence); }
         catch (SQLException ex) { return -1; }
+    }
+
+    private Optional<Punishment> getActiveOffenceQuietly(UUID target, String category, String offence) {
+        try { return database.activeOffence(target, category, offence); }
+        catch (SQLException ex) {
+            getLogger().warning("Could not check active offence " + offence + ": " + ex.getMessage());
+            return Optional.empty();
+        }
     }
 
     private void openHistoryRoot(Player staff, UUID target, String targetName) {
@@ -339,7 +420,18 @@ public final class PunishSystem extends JavaPlugin implements Listener {
                         }
                         return;
                     }
-                    issue(staff, holder.target(), holder.targetName(), holder.category(), offence);
+                    openConfirmation(staff, holder.target(), holder.targetName(), holder.category(), offence);
+                }
+                case CONFIRM -> {
+                    if (slot == 11) {
+                        String offence = holder.offenceAt(13);
+                        if (offence != null) {
+                            staff.closeInventory();
+                            issue(staff, holder.target(), holder.targetName(), holder.category(), offence);
+                        }
+                    } else if (slot == 15) {
+                        openOffences(staff, holder.target(), holder.targetName(), holder.category());
+                    }
                 }
                 case HISTORY_ROOT -> {
                     if (slot == 10) openHistoryList(staff, holder.target(), holder.targetName(), "BAN", 0);
@@ -389,6 +481,13 @@ public final class PunishSystem extends JavaPlugin implements Listener {
             return;
         }
         try {
+            Optional<Punishment> active = database.activeOffence(target, category, offence);
+            if (active.isPresent()) {
+                staff.sendMessage(color("&cCannot issue &f" + offence + "&c: " + targetName
+                        + " already has an active punishment for this offence."));
+                return;
+            }
+            int offenceNumber = punishments.offenceCount(target, category, offence) + 1;
             PunishmentStep step = punishments.nextStep(target, category, offence);
             if (step == null) return;
             // Helpers can use the Social menu, but cannot issue any BAN step.
@@ -405,7 +504,18 @@ public final class PunishSystem extends JavaPlugin implements Listener {
 
             staff.sendMessage(color("&aIssued &c" + offence + " &ato &f" + targetName
                     + " &7(" + actionLabel(step.action()) + ", "
-                    + PunishmentService.formatDuration(step.durationMillis()) + ", #" + id + ")"));
+                    + PunishmentService.formatDuration(step.durationMillis()) + ", Offence #" + offenceNumber
+                    + ", Record #" + id + ")"));
+
+            // Staff-only visibility: LuckPerms grants this node to Helper and every higher staff group.
+            String staffNotice = color("&8[&cStaff&8] &f" + targetName + " &7received a "
+                    + (step.action().equals("BAN") ? "&cban" : step.action().equals("MUTE") ? "&bmute" : "&ewarning")
+                    + " &7for &f" + offence + " &8(&f" + PunishmentService.formatDuration(step.durationMillis())
+                    + "&8) &7by &f" + staff.getName() + " &8[Offence #" + offenceNumber
+                    + " | Record #" + id + "]");
+            for (Player viewer : Bukkit.getOnlinePlayers()) {
+                if (viewer.hasPermission("punish.staff.notifications")) viewer.sendMessage(staffNotice);
+            }
 
             Player online = Bukkit.getPlayer(target);
             if (online != null) {
@@ -508,7 +618,7 @@ public final class PunishSystem extends JavaPlugin implements Listener {
                 : PunishmentService.formatDuration(roundUpToMinute(remainingMillis));
         String message = "&8&m------------------------------------------------\n"
                 + "&4&lACCESS DENIED\n"
-                + "&c&lROBBlestone NETWORK\n"
+                + "&c&lRobblestone Network\n"
                 + "&8&m------------------------------------------------\n"
                 + "\n"
                 + "&c&lBanned reason\n"

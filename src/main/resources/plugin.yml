@@ -1,5 +1,5 @@
 name: PunishSystem
-version: 1.0.2
+version: 1.0.4
 main: com.punishsystem.PunishSystem
 api-version: '26.2'
 author: Server Staff Team
@@ -36,3 +36,6 @@ permissions:
     default: op
   punish.remove.ban:
     default: op
+  punish.staff.notifications:
+    description: Receive in-game staff-only punishment notifications.
+    default: false

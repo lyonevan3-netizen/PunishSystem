@@ -8,7 +8,7 @@ import java.util.Map;
 import java.util.UUID;
 
 public final class MenuHolder implements InventoryHolder {
-    public enum Type { PUNISH_ROOT, OFFENCES, HISTORY_ROOT, HISTORY_LIST, DETAILS }
+    public enum Type { PUNISH_ROOT, OFFENCES, CONFIRM, HISTORY_ROOT, HISTORY_LIST, DETAILS }
 
     private final Type type;
     private final UUID target;
