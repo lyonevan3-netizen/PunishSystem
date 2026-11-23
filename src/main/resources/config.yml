@@ -1,0 +1,50 @@
+settings:
+  database: punishments.db
+  history-page-size: 45
+  link-code-expiry-seconds: 300
+  messages:
+    prefix: '&8[&cPunish&8] &7'
+    no-permission: '&cYou do not have permission to do that.'
+    player-not-found: '&cThat player has never joined this server.'
+    punishment-issued: '&aPunishment issued successfully.'
+    punishment-removed: '&aPunishment revoked successfully.'
+
+# The category controls which menu the offence appears in.
+# The action controls what is actually applied: MUTE, BAN or WARN.
+# Durations are evaluated in order. Once the final step is reached, it is capped there.
+# Use PERM for permanent punishments. A WARN is a recorded warning, not a timed punishment.
+punishments:
+  social:
+    Spamming: ["MUTE:30m", "MUTE:2h", "MUTE:6h"]
+    Minor toxicity: ["MUTE:1d", "MUTE:5d", "MUTE:14d"]
+    Severe toxicity: ["MUTE:14d", "MUTE:30d", "MUTE:PERM"]
+    Hate speech: ["MUTE:30d", "MUTE:PERM"]
+    Unrelated content: ["MUTE:6h", "MUTE:3d", "MUTE:7d"]
+    Advertising: ["MUTE:7d", "MUTE:30d", "MUTE:PERM"]
+    External servers: ["MUTE:30d", "MUTE:PERM"]
+    Inappropriate messages: ["MUTE:7d", "MUTE:14d", "MUTE:90d"]
+    Explicit messages: ["MUTE:14d", "MUTE:30d", "MUTE:PERM"]
+    Voice chat (abuse): ["MUTE:1h", "MUTE:12h", "MUTE:1d", "MUTE:3d", "MUTE:14d", "MUTE:30d"]
+    Explicit threats: ["BAN:PERM"]
+    Fishing: ["BAN:PERM"]
+    Inappropriate username: ["BAN:PERM"]
+  moderator:
+    Misuse of helpop: ["WARN:0", "BAN:6h", "BAN:3d"]
+    Mute Evasion: ["MUTE:PERM"]
+    Ban evasion: ["BAN:PERM"]
+    Compromised Account: ["BAN:PERM"]
+    Minor Cheating: ["BAN:3d", "BAN:7d", "BAN:14d", "BAN:30d"]
+    Cheating: ["BAN:7d", "BAN:14d", "BAN:30d", "BAN:PERM"]
+    Bug abuse: ["BAN:3h", "BAN:1d", "BAN:3d", "BAN:7d", "BAN:30d"]
+    Severe Bug Abuse: ["BAN:7d", "BAN:30d", "BAN:PERM"]
+    Duping: ["BAN:PERM"]
+
+discord:
+  enabled: false
+  # Discord bot integration will be configured in the next development stage.
+  bot-url: "http://127.0.0.1:8765"
+  shared-secret: "CHANGE-ME"
+  channels:
+    all: ""
+    mutes: ""
+    bans: ""

@@ -1,0 +1,30 @@
+name: PunishSystem
+version: 0.1.0-alpha
+main: com.punishsystem.PunishSystem
+api-version: '26.2'
+author: Server Staff Team
+description: Staff punishment management, escalation and history.
+softdepend: [LuckPerms]
+commands:
+  punish:
+    description: Open the punishment menu for a player.
+    usage: /punish <player>
+    permission: punish.command.punish
+  history:
+    description: View a player's punishment history.
+    usage: /history <player>
+    aliases: [hist]
+    permission: punish.command.history
+  link:
+    description: Link your Minecraft account to Discord.
+    usage: /link
+    permission: punish.command.link
+permissions:
+  punish.command.punish: {default: op}
+  punish.command.history: {default: op}
+  punish.command.link: {default: op}
+  punish.category.social: {default: op}
+  punish.category.moderator: {default: op}
+  punish.remove.mute: {default: op}
+  punish.remove.warn: {default: op}
+  punish.remove.ban: {default: op}
