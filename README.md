@@ -1,4 +1,4 @@
-# PunishSystem 1.0.0
+# PunishSystem 1.0.2
 
 A rebuilt Paper-compatible punishment plugin for Minecraft 26.2, using Java 25, SQLite, configurable escalation and inventory-based staff menus.
 
@@ -35,7 +35,7 @@ gradle clean build
 
 The shaded plugin JAR will be created at:
 
-`build/libs/PunishSystem-1.0.0.jar`
+`build/libs/PunishSystem-1.0.2.jar`
 
 The build includes SQLite JDBC and relocates its package into the plugin namespace.
 
@@ -47,7 +47,7 @@ The repository workflow builds on pushes to `main` and can be started manually f
 
 1. Stop the test server.
 2. Back up `plugins/PunishSystem/` including `punishments.db` and `config.yml`.
-3. Replace the old plugin JAR with `PunishSystem-1.0.0.jar`.
+3. Replace the old plugin JAR with `PunishSystem-1.0.2.jar`.
 4. Keep the existing `plugins/PunishSystem/punishments.db` to preserve history.
 5. Start a staging server first and inspect the console for startup errors.
 6. Confirm the menus, permissions, punishments, expiry, mute and ban enforcement before production rollout.

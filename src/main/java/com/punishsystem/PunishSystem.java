@@ -6,6 +6,8 @@ import com.punishsystem.model.Punishment;
 import com.punishsystem.model.PunishmentStep;
 import com.punishsystem.service.PunishmentService;
 import io.papermc.paper.event.player.AsyncChatEvent;
+import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
 import org.bukkit.Material;
@@ -59,7 +61,7 @@ public final class PunishSystem extends JavaPlugin implements Listener {
         }, 20L, 20L * 60L);
 
         int count = punishments.definitions().values().stream().mapToInt(Map::size).sum();
-        getLogger().info("PunishSystem 1.0.0 enabled. Loaded " + count + " offence definitions.");
+        getLogger().info("PunishSystem 1.0.2 enabled. Loaded " + count + " offence definitions.");
     }
 
     @Override
@@ -152,10 +154,14 @@ public final class PunishSystem extends JavaPlugin implements Listener {
         MenuHolder holder = new MenuHolder(MenuHolder.Type.PUNISH_ROOT, target, targetName, null, null, 0);
         Inventory inv = inventory(holder, 27, "Punishments");
         if (staff.hasPermission("punish.category.social")) {
-            inv.setItem(11, item(Material.GREEN_WOOL, "&aSocial Punishments", "&7Warnings and mutes"));
+            inv.setItem(11, item(Material.GREEN_WOOL, "&a&lSocial Punishments",
+                    "&8&m--------------------", "&7Chat-related offences and warnings", "&bIncludes mutes &fand warnings", " ",
+                    "&e▶ Select to browse offences"));
         }
         if (staff.hasPermission("punish.category.moderator")) {
-            inv.setItem(15, item(Material.RED_WOOL, "&cModerator Punishments", "&7Moderator-level actions"));
+            inv.setItem(15, item(Material.RED_WOOL, "&c&lModerator Punishments",
+                    "&8&m--------------------", "&7Serious and moderator-level offences", "&cIncludes temporary and permanent bans", " ",
+                    "&e▶ Select to browse offences"));
         }
         staff.openInventory(inv);
     }
@@ -193,21 +199,33 @@ public final class PunishSystem extends JavaPlugin implements Listener {
                 default -> Material.YELLOW_WOOL;
             };
             List<String> lore = new ArrayList<>();
-            lore.add("&7Escalation schedule:");
+            lore.add("&8&m--------------------");
+            lore.add("&b&lPUNISHMENT LADDER");
+            lore.add("&7See how this offence escalates:");
+            lore.add(" ");
+            int nextIndex = Math.min(getCountQuietly(target, category, entry.getKey()), steps.size() - 1);
             for (int i = 0; i < steps.size(); i++) {
                 PunishmentStep step = steps.get(i);
-                String line = "&7" + (i + 1) + ". " + actionLabel(step.action()) + ": "
-                        + PunishmentService.formatDuration(step.durationMillis());
-                if (i == Math.min(getCountQuietly(target, category, entry.getKey()), steps.size() - 1)) {
-                    line += " &a<-- Next";
-                }
+                String actionColour = switch (step.action()) {
+                    case "MUTE" -> "&b";
+                    case "BAN" -> "&c";
+                    default -> "&e";
+                };
+                String line = (i == nextIndex ? "&a▶ " : "&8• ")
+                        + "&7Step " + (i + 1) + "  " + actionColour + "&l" + actionLabel(step.action())
+                        + " &8» &f" + PunishmentService.formatDuration(step.durationMillis());
+                if (i == nextIndex) line += " &a&l(NEXT)";
                 lore.add(line);
             }
-            inv.setItem(slot, item(material, "&c" + entry.getKey(), lore.toArray(String[]::new)));
+            lore.add(" ");
+            lore.add("&8&m--------------------");
+            lore.add("&e&l» &fClick to issue this punishment");
+            lore.add("&7Appeals: &bdiscord.gg/robblestone");
+            inv.setItem(slot, item(material, "&c&l" + entry.getKey(), lore.toArray(String[]::new)));
             holder.mapOffence(slot, entry.getKey());
             slot++;
         }
-        if (slot == 0) inv.setItem(4, item(Material.BARRIER, "&cNo offences available"));
+        if (slot == 0) inv.setItem(4, item(Material.BARRIER, "&c&lNo offences available", "&7There are no offences you can issue here."));
         inv.setItem(size - 1, item(Material.ARROW, "&7Back to Punishments"));
         staff.openInventory(inv);
     }
@@ -220,9 +238,9 @@ public final class PunishSystem extends JavaPlugin implements Listener {
     private void openHistoryRoot(Player staff, UUID target, String targetName) {
         MenuHolder holder = new MenuHolder(MenuHolder.Type.HISTORY_ROOT, target, targetName, null, null, 0);
         Inventory inv = inventory(holder, 27, "Punishment History");
-        inv.setItem(10, item(Material.RED_WOOL, "&cBans", "&7View ban history"));
-        inv.setItem(13, item(Material.BLUE_WOOL, "&bMutes", "&7View mute history"));
-        inv.setItem(16, item(Material.YELLOW_WOOL, "&eWarnings", "&7View warning history"));
+        inv.setItem(10, item(Material.RED_WOOL, "&c&lBans", "&7Review ban records", "&8» &fActive, expired and revoked"));
+        inv.setItem(13, item(Material.BLUE_WOOL, "&b&lMutes", "&7Review mute records", "&8» &fActive, expired and revoked"));
+        inv.setItem(16, item(Material.YELLOW_WOOL, "&e&lWarnings", "&7Review warning records", "&8» &fIssued and revoked"));
         staff.openInventory(inv);
     }
 
@@ -242,11 +260,12 @@ public final class PunishSystem extends JavaPlugin implements Listener {
                         : active ? Material.LIME_WOOL : Material.RED_WOOL;
                 String state = p.status().equals("REVOKED") ? "Revoked" : active ? "Active" : "Expired";
                 inv.setItem(slot, item(material, "&f#" + p.id() + " &c" + p.offence(),
-                        "&7Status: " + state,
-                        "&7Duration: " + (p.permanent() ? "Permanent" : PunishmentService.formatDuration(p.durationMillis())),
-                        "&7Issued: " + new Date(p.issuedAt()),
-                        "&7Staff: " + p.staffName(),
-                        "&eClick for details"));
+                        "&bStatus &8» " + (active ? "&a" : p.status().equals("REVOKED") ? "&7" : "&c") + state,
+                        "&bDuration &8» &f" + (p.permanent() ? "Permanent" : PunishmentService.formatDuration(p.durationMillis())),
+                        "&bIssued &8» &f" + new Date(p.issuedAt()),
+                        "&bStaff &8» &f" + p.staffName(),
+                        " ",
+                        "&e▶ Click to view full details"));
                 holder.mapPunishment(slot, p.id());
                 slot++;
             }
@@ -270,17 +289,18 @@ public final class PunishSystem extends JavaPlugin implements Listener {
                     p.category(), Long.toString(id), 0);
             Inventory inv = inventory(holder, 27, "Punishment Details");
             inv.setItem(4, item(Material.PAPER, "&c" + p.offence(),
-                    "&7ID: #" + p.id(),
-                    "&7Player: " + p.playerName(),
-                    "&7Category: " + titleCase(p.category()),
-                    "&7Action: " + actionLabel(p.action()),
-                    "&7Issued: " + new Date(p.issuedAt()),
-                    "&7Expires: " + (p.warning() ? "N/A" : p.permanent() ? "Never" : new Date(p.expiresAt())),
-                    "&7Duration: " + (p.permanent() ? "Permanent" : PunishmentService.formatDuration(p.durationMillis())),
-                    "&7Staff: " + p.staffName(),
-                    "&7Status: " + p.status(),
-                    p.removalReason() == null ? "&7Removal: None" : "&7Removal: " + p.removalReason(),
-                    p.removedBy() == null ? "&7Removed by: None" : "&7Removed by: " + p.removedBy()));
+                    "&8&m--------------------",
+                    "&bID &8» &f#" + p.id(),
+                    "&bPlayer &8» &f" + p.playerName(),
+                    "&bCategory &8» &f" + titleCase(p.category()),
+                    "&bAction &8» &f" + actionLabel(p.action()),
+                    "&bIssued &8» &f" + new Date(p.issuedAt()),
+                    "&bExpires &8» &f" + (p.warning() ? "N/A" : p.permanent() ? "Never" : new Date(p.expiresAt())),
+                    "&bDuration &8» &f" + (p.permanent() ? "Permanent" : PunishmentService.formatDuration(p.durationMillis())),
+                    "&bStaff &8» &f" + p.staffName(),
+                    "&bStatus &8» &f" + p.status(),
+                    p.removalReason() == null ? "&bRemoval &8» &fNone" : "&bRemoval &8» &f" + p.removalReason(),
+                    p.removedBy() == null ? "&bRemoved by &8» &fNone" : "&bRemoved by &8» &f" + p.removedBy()));
             if (!p.status().equals("REVOKED")) {
                 String permission = removalPermission(p.action());
                 if (staff.hasPermission(permission)) {
@@ -390,11 +410,15 @@ public final class PunishSystem extends JavaPlugin implements Listener {
             Player online = Bukkit.getPlayer(target);
             if (online != null) {
                 switch (step.action()) {
-                    case "MUTE" -> online.sendMessage(color("&cYou have been muted for &f"
-                            + PunishmentService.formatDuration(step.durationMillis()) + "&c. Reason: &f" + offence));
-                    case "BAN" -> online.kickPlayer("You have been banned.\nReason: " + offence
-                            + (step.permanent() ? "\nDuration: Permanent"
-                            : "\nDuration: " + PunishmentService.formatDuration(step.durationMillis())));
+                    case "MUTE" -> online.sendMessage(color("&8&m------------------------------\n"
+                            + "&c&lCHAT RESTRICTED\n"
+                            + "&7Your chat access has been temporarily restricted.\n\n"
+                            + "&c&lReason &8» &f" + offence + "\n"
+                            + "&b&lTime left &8» &f" + PunishmentService.formatDuration(step.durationMillis()) + "\n\n"
+                            + "&e&lAppeal &8» &bdiscord.gg/robblestone\n"
+                            + "&7Join our Discord and open a support ticket.\n"
+                            + "&8&m------------------------------"));
+                    case "BAN" -> online.kick(banScreen(offence, step.durationMillis(), expiry, staff.getName(), id));
                     case "WARN" -> online.sendMessage(color("&eYou have received a warning. Reason: &f" + offence));
                 }
             }
@@ -410,7 +434,13 @@ public final class PunishSystem extends JavaPlugin implements Listener {
             List<Punishment> active = database.activeFor(event.getPlayer().getUniqueId(), "MUTE");
             if (!active.isEmpty()) {
                 event.setCancelled(true);
-                event.getPlayer().sendMessage(color("&cYou are muted. Reason: &f" + active.getFirst().offence()));
+                Punishment mute = active.getFirst();
+                String remaining = mute.permanent() ? "Permanent"
+                        : PunishmentService.formatDuration(roundedRemainingMillis(mute));
+                event.getPlayer().sendMessage(color("&8[&cPunish&8] &c&lCHAT RESTRICTED &8» &7You cannot send messages right now.\n"
+                        + "&cReason &8» &f" + mute.offence() + "\n"
+                        + "&bTime remaining &8» &f" + remaining + "\n"
+                        + "&eAppeal &8» &bdiscord.gg/robblestone &7(open a support ticket)"));
             }
         } catch (SQLException ex) {
             getLogger().warning("Mute lookup failed: " + ex.getMessage());
@@ -428,12 +458,23 @@ public final class PunishSystem extends JavaPlugin implements Listener {
             List<Punishment> active = database.activeFor(event.getPlayer().getUniqueId(), "MUTE");
             if (!active.isEmpty()) {
                 event.setCancelled(true);
-                event.getPlayer().sendMessage(color("&cYou are muted and cannot use that command. Reason: &f"
-                        + active.getFirst().offence()));
+                Punishment mute = active.getFirst();
+                String remaining = mute.permanent() ? "Permanent"
+                        : PunishmentService.formatDuration(roundedRemainingMillis(mute));
+                event.getPlayer().sendMessage(color("&8[&cPunish&8] &c&lCHAT RESTRICTED &8» &7That command is unavailable while muted.\n"
+                        + "&cReason &8» &f" + mute.offence() + "\n"
+                        + "&bTime remaining &8» &f" + remaining + "\n"
+                        + "&eAppeal &8» &bdiscord.gg/robblestone &7(open a support ticket)"));
             }
         } catch (SQLException ex) {
             getLogger().warning("Mute command lookup failed: " + ex.getMessage());
         }
+    }
+
+    private long roundedRemainingMillis(Punishment punishment) {
+        long remaining = Math.max(0L, punishment.expiresAt() - System.currentTimeMillis());
+        // Round up so a mute with less than one minute left never displays as 0m.
+        return ((remaining + 59_999L) / 60_000L) * 60_000L;
     }
 
     @EventHandler
@@ -442,13 +483,58 @@ public final class PunishSystem extends JavaPlugin implements Listener {
             List<Punishment> active = database.activeFor(event.getUniqueId(), "BAN");
             if (!active.isEmpty()) {
                 Punishment punishment = active.getFirst();
-                String expiry = punishment.permanent() ? "Permanent" : new Date(punishment.expiresAt()).toString();
-                event.disallow(AsyncPlayerPreLoginEvent.Result.KICK_BANNED,
-                        "You are banned.\nReason: " + punishment.offence() + "\nExpires: " + expiry);
+                event.disallow(AsyncPlayerPreLoginEvent.Result.KICK_BANNED, banScreen(punishment));
             }
         } catch (SQLException ex) {
             getLogger().warning("Ban lookup failed: " + ex.getMessage());
         }
+    }
+
+    private Component banScreen(Punishment punishment) {
+        long remaining = punishment.permanent() ? -1L
+                : Math.max(0L, punishment.expiresAt() - System.currentTimeMillis());
+        return banScreen(punishment.offence(), punishment.durationMillis(),
+                punishment.expiresAt(), punishment.staffName(), punishment.id(), remaining);
+    }
+
+    private Component banScreen(String reason, long durationMillis, long expiresAt, String staffName, long id) {
+        long remaining = durationMillis < 0 ? -1L : Math.max(0L, expiresAt - System.currentTimeMillis());
+        return banScreen(reason, durationMillis, expiresAt, staffName, id, remaining);
+    }
+
+    private Component banScreen(String reason, long durationMillis, long expiresAt,
+                                String staffName, long id, long remainingMillis) {
+        String timeLeft = durationMillis < 0 ? "Permanent"
+                : PunishmentService.formatDuration(roundUpToMinute(remainingMillis));
+        String message = "&8&m------------------------------------------------\n"
+                + "&4&lACCESS DENIED\n"
+                + "&c&lROBBlestone NETWORK\n"
+                + "&8&m------------------------------------------------\n"
+                + "\n"
+                + "&c&lBanned reason\n"
+                + "&f" + reason + "\n"
+                + "\n"
+                + "&6&lDuration left\n"
+                + "&f" + timeLeft + "\n"
+                + "\n"
+                + "&7Issued by &8» &f" + staffName + "\n"
+                + "&7Punishment ID &8» &f#" + id + "\n"
+                + "\n"
+                + "&a&lNeed to appeal?\n"
+                + "&fIf you believe this punishment is incorrect,\n"
+                + "&fyou can submit an appeal on our Discord.\n"
+                + "&b&ldiscord.gg/robblestone\n"
+                + "&7Join and open a support ticket.\n"
+                + "\n"
+                + "&8Please include your Minecraft username and\n"
+                + "&8punishment ID when contacting staff.\n"
+                + "&8&m------------------------------------------------";
+        return LegacyComponentSerializer.legacyAmpersand().deserialize(message);
+    }
+
+    private long roundUpToMinute(long millis) {
+        if (millis <= 0) return 60_000L;
+        return ((millis + 59_999L) / 60_000L) * 60_000L;
     }
 
     private Inventory inventory(MenuHolder holder, int size, String title) {
