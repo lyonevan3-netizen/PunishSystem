@@ -10,5 +10,8 @@ public record Punishment(
 ) {
     public boolean permanent() { return durationMillis < 0; }
     public boolean warning() { return action.equalsIgnoreCase("WARN"); }
-    public boolean active() { return status.equalsIgnoreCase("ACTIVE") && (warning() || permanent() || expiresAt > System.currentTimeMillis()); }
+    public boolean active() {
+        return status.equalsIgnoreCase("ACTIVE")
+                && (warning() || permanent() || expiresAt > System.currentTimeMillis());
+    }
 }

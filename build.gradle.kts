@@ -4,7 +4,7 @@ plugins {
 }
 
 group = "com.punishsystem"
-version = "0.1.0-alpha"
+version = "1.0.0"
 
 repositories {
     mavenCentral()
@@ -12,7 +12,8 @@ repositories {
 }
 
 dependencies {
-    compileOnly("io.papermc.paper:paper-api:26.2.build.19-alpha")
+    // Paper 26.2 stable API; the plugin only uses Bukkit/Paper public APIs.
+    compileOnly("io.papermc.paper:paper-api:26.2.build.129-stable")
     implementation("org.xerial:sqlite-jdbc:3.50.3.0")
 }
 

@@ -1,7 +1,19 @@
 settings:
   database: punishments.db
   history-page-size: 45
-  link-code-expiry-seconds: 300
+  # These commands are blocked while muted. Root labels only; namespaced labels are checked too.
+  muted-blocked-commands:
+    - msg
+    - tell
+    - w
+    - whisper
+    - message
+    - reply
+    - r
+    - me
+    - mail
+    - m
+    - t
   messages:
     prefix: '&8[&cPunish&8] &7'
     no-permission: '&cYou do not have permission to do that.'
@@ -9,10 +21,8 @@ settings:
     punishment-issued: '&aPunishment issued successfully.'
     punishment-removed: '&aPunishment revoked successfully.'
 
-# The category controls which menu the offence appears in.
-# The action controls what is actually applied: MUTE, BAN or WARN.
-# Durations are evaluated in order. Once the final step is reached, it is capped there.
-# Use PERM for permanent punishments. A WARN is a recorded warning, not a timed punishment.
+# Format: ACTION:DURATION. Actions: MUTE, BAN, WARN. Durations: m, h, d, w, PERM.
+# Steps escalate in order. The last step is capped indefinitely.
 punishments:
   social:
     Spamming: ["MUTE:30m", "MUTE:2h", "MUTE:6h"]
@@ -41,7 +51,7 @@ punishments:
 
 discord:
   enabled: false
-  # Discord bot integration will be configured in the next development stage.
+  # Reserved for the separate Discord bridge/bot integration stage.
   bot-url: "http://127.0.0.1:8765"
   shared-secret: "CHANGE-ME"
   channels:

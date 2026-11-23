@@ -1,283 +1,499 @@
 package com.punishsystem;
 
 import com.punishsystem.db.PunishmentDatabase;
+import com.punishsystem.gui.MenuHolder;
 import com.punishsystem.model.Punishment;
+import com.punishsystem.model.PunishmentStep;
+import com.punishsystem.service.PunishmentService;
 import io.papermc.paper.event.player.AsyncChatEvent;
-import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
-import org.bukkit.*;
+import org.bukkit.Bukkit;
+import org.bukkit.ChatColor;
+import org.bukkit.Material;
+import org.bukkit.OfflinePlayer;
 import org.bukkit.command.*;
-import org.bukkit.configuration.ConfigurationSection;
-import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.entity.Player;
-import org.bukkit.event.*;
+import org.bukkit.event.EventHandler;
+import org.bukkit.event.Listener;
 import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.event.player.AsyncPlayerPreLoginEvent;
 import org.bukkit.event.player.PlayerCommandPreprocessEvent;
-import org.bukkit.inventory.*;
+import org.bukkit.inventory.Inventory;
+import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
 import org.bukkit.plugin.java.JavaPlugin;
 
 import java.io.File;
 import java.sql.SQLException;
-import java.time.Duration;
 import java.util.*;
 
-public final class PunishSystem extends JavaPlugin implements Listener, CommandExecutor {
+public final class PunishSystem extends JavaPlugin implements Listener {
     private PunishmentDatabase database;
-    private final Map<String, List<Step>> definitions = new LinkedHashMap<>();
-    private static final String SOCIAL = "social";
-    private static final String MODERATOR = "moderator";
+    private PunishmentService punishments;
 
-    private record Step(String action, long durationMillis) {}
-
-    @Override public void onEnable() {
+    @Override
+    public void onEnable() {
         saveDefaultConfig();
-        loadDefinitions();
-        try { database = new PunishmentDatabase(new File(getDataFolder(), getConfig().getString("settings.database", "punishments.db"))); }
-        catch (SQLException ex) { getLogger().severe("Could not open punishment database: " + ex.getMessage()); getServer().getPluginManager().disablePlugin(this); return; }
-        for (String cmd : List.of("punish", "history", "link")) {
-            PluginCommand command = getCommand(cmd);
-            if (command != null) { command.setExecutor(this); if (cmd.equals("history")) command.setAliases(List.of("hist")); }
+        try {
+            database = new PunishmentDatabase(new File(getDataFolder(),
+                    getConfig().getString("settings.database", "punishments.db")));
+        } catch (SQLException ex) {
+            getLogger().severe("Could not open punishment database: " + ex.getMessage());
+            getServer().getPluginManager().disablePlugin(this);
+            return;
         }
+
+        punishments = new PunishmentService(database);
+        punishments.load(getConfig());
+
+        Objects.requireNonNull(getCommand("punish")).setExecutor(new PunishCommand());
+        Objects.requireNonNull(getCommand("history")).setExecutor(new HistoryCommand());
+        Objects.requireNonNull(getCommand("link")).setExecutor(new LinkCommand());
         getServer().getPluginManager().registerEvents(this, this);
+
         getServer().getScheduler().runTaskTimerAsynchronously(this, () -> {
-            try { database.expireOld(); } catch (SQLException e) { getLogger().warning("Expiry update failed: " + e.getMessage()); }
+            try {
+                database.expireOld();
+            } catch (SQLException ex) {
+                getLogger().warning("Could not expire old punishments: " + ex.getMessage());
+            }
         }, 20L, 20L * 60L);
-        getLogger().info("PunishSystem enabled. Loaded " + definitions.size() + " offence definitions.");
+
+        int count = punishments.definitions().values().stream().mapToInt(Map::size).sum();
+        getLogger().info("PunishSystem 1.0.0 enabled. Loaded " + count + " offence definitions.");
     }
 
-    @Override public void onDisable() { if (database != null) try { database.close(); } catch (SQLException ignored) {} }
+    @Override
+    public void onDisable() {
+        if (database != null) {
+            try { database.close(); }
+            catch (SQLException ex) { getLogger().warning("Could not close database: " + ex.getMessage()); }
+        }
+    }
 
-    private void loadDefinitions() {
-        definitions.clear();
-        FileConfiguration c = getConfig();
-        for (String category : List.of(SOCIAL, MODERATOR)) {
-            ConfigurationSection section = c.getConfigurationSection("punishments." + category);
-            if (section == null) continue;
-            for (String offence : section.getKeys(false)) {
-                List<Step> steps = new ArrayList<>();
-                for (String raw : section.getStringList(offence)) {
-                    String[] split = raw.split(":", 2);
-                    if (split.length != 2) continue;
-                    String action = split[0].trim().toUpperCase(Locale.ROOT);
-                    long duration = split[1].equalsIgnoreCase("PERM") ? -1 : parseDuration(split[1]);
-                    if (List.of("MUTE", "BAN", "WARN").contains(action) && (duration >= 0 || duration == -1)) steps.add(new Step(action, duration));
+    private final class PunishCommand implements TabExecutor {
+        @Override
+        public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
+            if (!(sender instanceof Player staff)) {
+                sender.sendMessage("This command can only be used in-game.");
+                return true;
+            }
+            if (args.length != 1) {
+                staff.sendMessage(color("&cUsage: /punish <player>"));
+                return true;
+            }
+            OfflinePlayer target = findPlayer(args[0]);
+            if (target == null) {
+                staff.sendMessage(message("player-not-found"));
+                return true;
+            }
+            openPunishRoot(staff, target.getUniqueId(), safeName(target, args[0]));
+            return true;
+        }
+
+        @Override public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
+            if (args.length != 1) return List.of();
+            String prefix = args[0].toLowerCase(Locale.ROOT);
+            return Bukkit.getOnlinePlayers().stream().map(Player::getName)
+                    .filter(name -> name.toLowerCase(Locale.ROOT).startsWith(prefix)).toList();
+        }
+    }
+
+    private final class HistoryCommand implements TabExecutor {
+        @Override
+        public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
+            if (!(sender instanceof Player staff)) {
+                sender.sendMessage("This command can only be used in-game.");
+                return true;
+            }
+            if (args.length != 1) {
+                staff.sendMessage(color("&cUsage: /hist <player>"));
+                return true;
+            }
+            OfflinePlayer target = findPlayer(args[0]);
+            if (target == null) {
+                staff.sendMessage(message("player-not-found"));
+                return true;
+            }
+            openHistoryRoot(staff, target.getUniqueId(), safeName(target, args[0]));
+            return true;
+        }
+
+        @Override public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
+            if (args.length != 1) return List.of();
+            String prefix = args[0].toLowerCase(Locale.ROOT);
+            return Bukkit.getOnlinePlayers().stream().map(Player::getName)
+                    .filter(name -> name.toLowerCase(Locale.ROOT).startsWith(prefix)).toList();
+        }
+    }
+
+    private final class LinkCommand implements CommandExecutor {
+        @Override
+        public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
+            sender.sendMessage(color("&cDiscord linking is not enabled in this build."));
+            sender.sendMessage(color("&7The separate Discord bridge will be added after the core plugin is tested."));
+            return true;
+        }
+    }
+
+    private OfflinePlayer findPlayer(String name) {
+        Player online = Bukkit.getPlayerExact(name);
+        if (online != null) return online;
+        OfflinePlayer cached = Bukkit.getOfflinePlayerIfCached(name);
+        if (cached != null && cached.hasPlayedBefore()) return cached;
+        OfflinePlayer lookup = Bukkit.getOfflinePlayer(name);
+        return lookup.hasPlayedBefore() ? lookup : null;
+    }
+
+    private String safeName(OfflinePlayer player, String fallback) {
+        return player.getName() == null ? fallback : player.getName();
+    }
+
+    private void openPunishRoot(Player staff, UUID target, String targetName) {
+        MenuHolder holder = new MenuHolder(MenuHolder.Type.PUNISH_ROOT, target, targetName, null, null, 0);
+        Inventory inv = inventory(holder, 27, "Punishments");
+        if (staff.hasPermission("punish.category.social")) {
+            inv.setItem(11, item(Material.GREEN_WOOL, "&aSocial Punishments", "&7Warnings and mutes"));
+        }
+        if (staff.hasPermission("punish.category.moderator")) {
+            inv.setItem(15, item(Material.RED_WOOL, "&cModerator Punishments", "&7Moderator-level actions"));
+        }
+        staff.openInventory(inv);
+    }
+
+    private void openOffences(Player staff, UUID target, String targetName, String category) {
+        String permission = category.equals("social") ? "punish.category.social" : "punish.category.moderator";
+        if (!staff.hasPermission(permission)) {
+            staff.sendMessage(message("no-permission"));
+            return;
+        }
+        LinkedHashMap<String, List<PunishmentStep>> offences =
+                new LinkedHashMap<>(punishments.definitions().getOrDefault(category, new LinkedHashMap<>()));
+
+        int size = Math.max(27, Math.min(54, ((offences.size() + 1 + 8) / 9) * 9));
+        MenuHolder holder = new MenuHolder(MenuHolder.Type.OFFENCES, target, targetName, category, null, 0);
+        Inventory inv = inventory(holder, size, category.equals("social") ? "Social Punishments" : "Moderator Punishments");
+
+        int slot = 0;
+        for (Map.Entry<String, List<PunishmentStep>> entry : offences.entrySet()) {
+            List<PunishmentStep> steps = entry.getValue();
+            if (!staff.hasPermission("punish.category.moderator")
+                    && steps.getFirst().action().equals("BAN")) continue;
+
+            PunishmentStep next;
+            try {
+                next = punishments.nextStep(target, category, entry.getKey());
+            } catch (SQLException ex) {
+                getLogger().warning("Could not calculate escalation: " + ex.getMessage());
+                continue;
+            }
+            if (next == null) continue;
+            Material material = switch (next.action()) {
+                case "MUTE" -> Material.BLUE_WOOL;
+                case "BAN" -> Material.RED_WOOL;
+                default -> Material.YELLOW_WOOL;
+            };
+            List<String> lore = new ArrayList<>();
+            lore.add("&7Escalation schedule:");
+            for (int i = 0; i < steps.size(); i++) {
+                PunishmentStep step = steps.get(i);
+                String line = "&7" + (i + 1) + ". " + actionLabel(step.action()) + ": "
+                        + PunishmentService.formatDuration(step.durationMillis());
+                if (i == Math.min(getCountQuietly(target, category, entry.getKey()), steps.size() - 1)) {
+                    line += " &a<-- Next";
                 }
-                if (!steps.isEmpty()) definitions.put(category + ":" + offence, steps);
+                lore.add(line);
             }
+            inv.setItem(slot, item(material, "&c" + entry.getKey(), lore.toArray(String[]::new)));
+            holder.mapOffence(slot, entry.getKey());
+            slot++;
         }
-    }
-
-    private long parseDuration(String input) {
-        if (input.equals("0")) return 0;
-        long total = 0; StringBuilder number = new StringBuilder();
-        for (char ch : input.toLowerCase(Locale.ROOT).toCharArray()) {
-            if (Character.isDigit(ch)) number.append(ch);
-            else if (!number.isEmpty()) {
-                long n = Long.parseLong(number.toString()); number.setLength(0);
-                total += switch (ch) { case 's' -> n * 1000L; case 'm' -> n * 60_000L; case 'h' -> n * 3_600_000L; case 'd' -> n * 86_400_000L; case 'w' -> n * 604_800_000L; default -> 0; };
-            }
-        }
-        return total;
-    }
-
-    private boolean allowed(CommandSender sender, String permission) {
-        if (sender.hasPermission(permission)) return true;
-        sender.sendMessage(color(getConfig().getString("settings.messages.no-permission", "&cNo permission.")));
-        return false;
-    }
-
-    @Override public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
-        if (!(sender instanceof Player staff)) { sender.sendMessage("This command can only be used in-game."); return true; }
-        switch (command.getName().toLowerCase(Locale.ROOT)) {
-            case "punish" -> {
-                if (!allowed(staff, "punish.command.punish")) return true;
-                if (args.length != 1) { staff.sendMessage(color("&cUsage: /punish <player>")); return true; }
-                OfflinePlayer target = Bukkit.getOfflinePlayer(args[0]);
-                if (!target.hasPlayedBefore() && !target.isOnline()) { staff.sendMessage(color("&cThat player has never joined this server.")); return true; }
-                openPunishRoot(staff, target.getUniqueId(), target.getName() == null ? args[0] : target.getName());
-            }
-            case "history" -> {
-                if (!allowed(staff, "punish.command.history")) return true;
-                if (args.length != 1) { staff.sendMessage(color("&cUsage: /history <player>")); return true; }
-                OfflinePlayer target = Bukkit.getOfflinePlayer(args[0]);
-                if (!target.hasPlayedBefore() && !target.isOnline()) { staff.sendMessage(color("&cThat player has never joined this server.")); return true; }
-                openHistoryRoot(staff, target.getUniqueId(), target.getName() == null ? args[0] : target.getName());
-            }
-            case "link" -> {
-                if (!allowed(staff, "punish.command.link")) return true;
-                staff.sendMessage(color("&eDiscord linking will be enabled when the companion bot is configured. Your account UUID is &f" + staff.getUniqueId()));
-            }
-        }
-        return true;
-    }
-
-    private void openPunishRoot(Player staff, UUID target, String name) {
-        Inventory inv = Bukkit.createInventory(null, 27, "PS:PUNISH:" + target + ":" + name);
-        inv.setItem(11, item(Material.GREEN_WOOL, "&aSocial Punishments", "&7Mutes and social offences"));
-        if (staff.hasPermission("punish.category.moderator")) inv.setItem(15, item(Material.RED_WOOL, "&cModerator Punishments", "&7Bans and moderator offences"));
+        if (slot == 0) inv.setItem(4, item(Material.BARRIER, "&cNo offences available"));
+        inv.setItem(size - 1, item(Material.ARROW, "&7Back to Punishments"));
         staff.openInventory(inv);
     }
 
-    private void openOffences(Player staff, UUID target, String name, String category) {
-        if (category.equals(SOCIAL) && !staff.hasPermission("punish.category.social")) return;
-        if (category.equals(MODERATOR) && !staff.hasPermission("punish.category.moderator")) return;
-        List<String> offences = definitions.keySet().stream().filter(k -> k.startsWith(category + ":"))
-                .filter(k -> staff.hasPermission("punish.category.moderator") || definitions.get(k).stream().noneMatch(step -> step.action.equals("BAN")))
-                .map(k -> k.substring(category.length() + 1)).toList();
-        Inventory inv = Bukkit.createInventory(null, Math.max(9, ((offences.size() + 8) / 9) * 9), "PS:OFFENCE:" + category + ":" + target + ":" + name);
-        int slot = 0; for (String offence : offences) inv.setItem(slot++, item(category.equals(SOCIAL) ? Material.GREEN_WOOL : Material.RED_WOOL, "&f" + offence, "&7Click to issue the next escalation"));
+    private int getCountQuietly(UUID target, String category, String offence) {
+        try { return punishments.offenceCount(target, category, offence); }
+        catch (SQLException ex) { return -1; }
+    }
+
+    private void openHistoryRoot(Player staff, UUID target, String targetName) {
+        MenuHolder holder = new MenuHolder(MenuHolder.Type.HISTORY_ROOT, target, targetName, null, null, 0);
+        Inventory inv = inventory(holder, 27, "Punishment History");
+        inv.setItem(10, item(Material.RED_WOOL, "&cBans", "&7View ban history"));
+        inv.setItem(13, item(Material.BLUE_WOOL, "&bMutes", "&7View mute history"));
+        inv.setItem(16, item(Material.YELLOW_WOOL, "&eWarnings", "&7View warning history"));
         staff.openInventory(inv);
     }
 
-    private void issue(Player staff, UUID target, String targetName, String category, String offence) {
+    private void openHistoryList(Player staff, UUID target, String targetName, String action, int page) {
+        int pageSize = Math.max(9, Math.min(45, getConfig().getInt("settings.history-page-size", 45)));
         try {
-            List<Step> steps = definitions.get(category + ":" + offence);
-            if (steps == null) return;
-            int count = database.offenceCount(target, offence);
-            Step step = steps.get(Math.min(count, steps.size() - 1));
-            if (step.action.equals("BAN") && !staff.hasPermission("punish.category.moderator")) {
-                staff.sendMessage(color("&cYou do not have permission to issue bans.")); return;
-            }
-            long now = System.currentTimeMillis();
-            long expiry = step.durationMillis < 0 ? -1 : step.durationMillis == 0 ? now : now + step.durationMillis;
-            database.issue(target, targetName, category, offence, step.action, step.durationMillis, now, expiry, staff.getUniqueId(), staff.getName());
-            String duration = step.action.equals("WARN") ? "warning" : step.durationMillis < 0 ? "permanent" : formatDuration(step.durationMillis);
-            staff.sendMessage(color("&aIssued &f" + offence + " &ato &f" + targetName + " &7(" + step.action + ", " + duration + ")"));
-            Player online = Bukkit.getPlayer(target);
-            if (online != null) {
-                if (step.action.equals("MUTE")) online.sendMessage(color("&cYou have been muted for &f" + duration + "&c. Reason: &f" + offence));
-                else if (step.action.equals("BAN")) online.kickPlayer("You have been banned. Reason: " + offence + (step.durationMillis < 0 ? "" : " | Duration: " + duration));
-                else online.sendMessage(color("&eYou have received a warning. Reason: &f" + offence));
-            }
-        } catch (SQLException ex) { staff.sendMessage(color("&cDatabase error issuing punishment.")); getLogger().severe(ex.getMessage()); }
-    }
-
-    private void openHistoryRoot(Player staff, UUID target, String name) {
-        Inventory inv = Bukkit.createInventory(null, 27, "PS:HIST:" + target + ":" + name);
-        inv.setItem(11, item(Material.RED_WOOL, "&cBans", "&7View ban history"));
-        inv.setItem(13, item(Material.GREEN_WOOL, "&aMutes", "&7View mute history"));
-        inv.setItem(15, item(Material.YELLOW_WOOL, "&eWarnings", "&7View warning history"));
-        staff.openInventory(inv);
-    }
-
-    private void openHistoryList(Player staff, UUID target, String category) {
-        String action = switch (category) { case "bans" -> "BAN"; case "mutes" -> "MUTE"; default -> "WARN"; };
-        try {
-            List<Punishment> entries = database.history(target, action);
-            Inventory inv = Bukkit.createInventory(null, Math.max(9, Math.min(54, ((entries.size() + 8) / 9) * 9)), "PS:LIST:" + target + ":" + category);
+            int total = database.historyCount(target, action);
+            int pages = Math.max(1, (int) Math.ceil(total / (double) pageSize));
+            int safePage = Math.max(0, Math.min(page, pages - 1));
+            List<Punishment> entries = database.history(target, action, pageSize, safePage * pageSize);
+            MenuHolder holder = new MenuHolder(MenuHolder.Type.HISTORY_LIST, target, targetName, null, action, safePage);
+            Inventory inv = inventory(holder, 54, "Punishment History · " + titleCase(action));
             int slot = 0;
-            for (Punishment p : entries.stream().limit(54).toList()) {
+            for (Punishment p : entries) {
                 boolean active = p.active();
-                Material wool = active ? Material.GREEN_WOOL : Material.RED_WOOL;
+                Material material = p.status().equals("REVOKED") ? Material.GRAY_WOOL
+                        : active ? Material.LIME_WOOL : Material.RED_WOOL;
                 String state = p.status().equals("REVOKED") ? "Revoked" : active ? "Active" : "Expired";
-                inv.setItem(slot++, item(wool, "&f#" + p.id() + " &7" + p.offence(), "&7Status: " + state,
-                        "&7Issued: " + new Date(p.issuedAt()), "&7Expires: " + (p.permanent() ? "Never" : p.warning() ? "N/A" : new Date(p.expiresAt())),
-                        "&7Duration: " + (p.permanent() ? "Permanent" : formatDuration(p.durationMillis())),
-                        "&7Staff: " + p.staffName(), "&eClick for details"));
+                inv.setItem(slot, item(material, "&f#" + p.id() + " &c" + p.offence(),
+                        "&7Status: " + state,
+                        "&7Duration: " + (p.permanent() ? "Permanent" : PunishmentService.formatDuration(p.durationMillis())),
+                        "&7Issued: " + new Date(p.issuedAt()),
+                        "&7Staff: " + p.staffName(),
+                        "&eClick for details"));
+                holder.mapPunishment(slot, p.id());
+                slot++;
             }
-            if (entries.isEmpty()) inv.setItem(4, item(Material.BARRIER, "&cNo history found"));
+            if (entries.isEmpty()) inv.setItem(22, item(Material.BARRIER, "&cNo history found"));
+            if (safePage > 0) inv.setItem(45, item(Material.ARROW, "&ePrevious page"));
+            inv.setItem(49, item(Material.BARRIER, "&cBack to history"));
+            if (safePage + 1 < pages) inv.setItem(53, item(Material.ARROW, "&eNext page"));
             staff.openInventory(inv);
-        } catch (SQLException ex) { staff.sendMessage(color("&cCould not load history.")); }
+        } catch (SQLException ex) {
+            staff.sendMessage(color("&cCould not load punishment history."));
+            getLogger().warning("History query failed: " + ex.getMessage());
+        }
     }
 
     private void openDetails(Player staff, long id) {
         try {
-            Optional<Punishment> found = database.get(id); if (found.isEmpty()) return;
+            Optional<Punishment> found = database.get(id);
+            if (found.isEmpty()) return;
             Punishment p = found.get();
-            Inventory inv = Bukkit.createInventory(null, 27, "PS:DETAIL:" + id);
-            inv.setItem(4, item(Material.PAPER, "&f" + p.offence(), "&7Player: " + p.playerName(), "&7Category: " + p.category(), "&7Action: " + p.action(), "&7Issued: " + new Date(p.issuedAt()), "&7Expires: " + (p.permanent() ? "Never" : p.warning() ? "N/A" : new Date(p.expiresAt())), "&7Duration: " + (p.permanent() ? "Permanent" : formatDuration(p.durationMillis())), "&7Staff: " + p.staffName(), "&7Status: " + p.status()));
+            MenuHolder holder = new MenuHolder(MenuHolder.Type.DETAILS, p.playerUuid(), p.playerName(),
+                    p.category(), Long.toString(id), 0);
+            Inventory inv = inventory(holder, 27, "Punishment Details");
+            inv.setItem(4, item(Material.PAPER, "&c" + p.offence(),
+                    "&7ID: #" + p.id(),
+                    "&7Player: " + p.playerName(),
+                    "&7Category: " + titleCase(p.category()),
+                    "&7Action: " + actionLabel(p.action()),
+                    "&7Issued: " + new Date(p.issuedAt()),
+                    "&7Expires: " + (p.warning() ? "N/A" : p.permanent() ? "Never" : new Date(p.expiresAt())),
+                    "&7Duration: " + (p.permanent() ? "Permanent" : PunishmentService.formatDuration(p.durationMillis())),
+                    "&7Staff: " + p.staffName(),
+                    "&7Status: " + p.status(),
+                    p.removalReason() == null ? "&7Removal: None" : "&7Removal: " + p.removalReason(),
+                    p.removedBy() == null ? "&7Removed by: None" : "&7Removed by: " + p.removedBy()));
             if (!p.status().equals("REVOKED")) {
-                String perm = p.action().equals("BAN") ? "punish.remove.ban" : p.action().equals("MUTE") ? "punish.remove.mute" : "punish.remove.warn";
-                if (staff.hasPermission(perm)) inv.setItem(11, item(Material.RED_WOOL, "&cRemove punishment", "&7Ordinary staff correction"));
-                if (p.action().equals("BAN") && staff.hasPermission("punish.remove.ban")) inv.setItem(15, item(Material.YELLOW_WOOL, "&eAppeal accepted", "&7Revoke and exclude from escalation"));
-            }
-            staff.openInventory(inv);
-        } catch (SQLException ex) { staff.sendMessage(color("&cCould not load punishment.")); }
-    }
-
-    @EventHandler public void onInventoryClick(InventoryClickEvent event) {
-        if (!(event.getWhoClicked() instanceof Player staff)) return;
-        String title = event.getView().getTitle(); if (!title.startsWith("PS:")) return;
-        event.setCancelled(true); ItemStack clicked = event.getCurrentItem(); if (clicked == null || clicked.getType().isAir() || !clicked.hasItemMeta()) return;
-        String display = ChatColor.stripColor(Objects.requireNonNullElse(clicked.getItemMeta().getDisplayName(), ""));
-        try {
-            if (title.startsWith("PS:PUNISH:")) {
-                String[] p = title.split(":", 4); UUID target = UUID.fromString(p[2]); String name = p[3];
-                if (event.getSlot() == 11) openOffences(staff, target, name, SOCIAL);
-                if (event.getSlot() == 15 && staff.hasPermission("punish.category.moderator")) openOffences(staff, target, name, MODERATOR);
-            } else if (title.startsWith("PS:OFFENCE:")) {
-                String[] p = title.split(":", 5); String category = p[2]; UUID target = UUID.fromString(p[3]); String name = p[4];
-                String offence = display;
-                if (definitions.containsKey(category + ":" + offence)) { staff.closeInventory(); issue(staff, target, name, category, offence); }
-            } else if (title.startsWith("PS:HIST:")) {
-                String[] p = title.split(":", 4); UUID target = UUID.fromString(p[2]);
-                if (event.getSlot() == 11) openHistoryList(staff, target, "bans");
-                if (event.getSlot() == 13) openHistoryList(staff, target, "mutes");
-                if (event.getSlot() == 15) openHistoryList(staff, target, "warns");
-            } else if (title.startsWith("PS:LIST:")) {
-                String[] p = title.split(":", 4); long id = Long.parseLong(display.substring(1, display.indexOf(' '))); openDetails(staff, id);
-            } else if (title.startsWith("PS:DETAIL:")) {
-                long id = Long.parseLong(title.substring("PS:DETAIL:".length()));
-                boolean appeal = clicked.getType() == Material.YELLOW_WOOL;
-                if (clicked.getType() == Material.RED_WOOL || appeal) {
-                    Punishment punishment = database.get(id).orElse(null); if (punishment == null) return;
-                    String permission = punishment.action().equals("BAN") ? "punish.remove.ban" : punishment.action().equals("MUTE") ? "punish.remove.mute" : "punish.remove.warn";
-                    if (!staff.hasPermission(permission)) return;
-                    if (database.revoke(id, "Staff removal", staff.getName(), appeal)) {
-                        staff.sendMessage(color("&aPunishment #" + id + " revoked."));
-                        Player target = Bukkit.getPlayer(punishment.playerUuid());
-                        if (target != null && punishment.action().equals("MUTE")) target.sendMessage(color("&aYour mute has been removed."));
-                    }
-                    staff.closeInventory();
+                String permission = removalPermission(p.action());
+                if (staff.hasPermission(permission)) {
+                    inv.setItem(11, item(Material.RED_WOOL, "&cRemove punishment", "&7Revoke this record"));
+                }
+                if (p.action().equals("BAN") && staff.hasPermission("punish.remove.ban")) {
+                    inv.setItem(15, item(Material.YELLOW_WOOL, "&eAccept appeal", "&7Revoke and exclude from escalation"));
                 }
             }
-        } catch (Exception ex) { getLogger().warning("GUI action failed: " + ex.getMessage()); staff.sendMessage(color("&cSomething went wrong. Check console.")); }
+            inv.setItem(22, item(Material.ARROW, "&7Back to history"));
+            staff.openInventory(inv);
+        } catch (SQLException ex) {
+            staff.sendMessage(color("&cCould not load punishment details."));
+        }
     }
 
-    @EventHandler public void onChat(AsyncChatEvent event) {
+    @EventHandler
+    public void onInventoryClick(InventoryClickEvent event) {
+        if (!(event.getWhoClicked() instanceof Player staff)) return;
+        if (!(event.getView().getTopInventory().getHolder() instanceof MenuHolder holder)) return;
+        if (event.getClickedInventory() != event.getView().getTopInventory()) return;
+        event.setCancelled(true);
+        int slot = event.getSlot();
+
         try {
-            List<Punishment> mutes = database.activeFor(event.getPlayer().getUniqueId(), "MUTE");
-            if (!mutes.isEmpty()) { event.setCancelled(true); event.getPlayer().sendMessage(color("&cYou are muted. Reason: &f" + mutes.getFirst().offence())); }
-        } catch (SQLException ex) { getLogger().warning("Mute check failed: " + ex.getMessage()); }
+            switch (holder.type()) {
+                case PUNISH_ROOT -> {
+                    if (slot == 11) openOffences(staff, holder.target(), holder.targetName(), "social");
+                    else if (slot == 15) openOffences(staff, holder.target(), holder.targetName(), "moderator");
+                }
+                case OFFENCES -> {
+                    String offence = holder.offenceAt(slot);
+                    if (offence == null) {
+                        if (slot == event.getView().getTopInventory().getSize() - 1) {
+                            openPunishRoot(staff, holder.target(), holder.targetName());
+                        }
+                        return;
+                    }
+                    issue(staff, holder.target(), holder.targetName(), holder.category(), offence);
+                }
+                case HISTORY_ROOT -> {
+                    if (slot == 10) openHistoryList(staff, holder.target(), holder.targetName(), "BAN", 0);
+                    else if (slot == 13) openHistoryList(staff, holder.target(), holder.targetName(), "MUTE", 0);
+                    else if (slot == 16) openHistoryList(staff, holder.target(), holder.targetName(), "WARN", 0);
+                }
+                case HISTORY_LIST -> {
+                    if (slot == 49) openHistoryRoot(staff, holder.target(), holder.targetName());
+                    else if (slot == 45) openHistoryList(staff, holder.target(), holder.targetName(), holder.action(), holder.page() - 1);
+                    else if (slot == 53) openHistoryList(staff, holder.target(), holder.targetName(), holder.action(), holder.page() + 1);
+                    else {
+                        Long id = holder.punishmentAt(slot);
+                        if (id != null) openDetails(staff, id);
+                    }
+                }
+                case DETAILS -> {
+                    long id = Long.parseLong(holder.action());
+                    if (slot == 22) openHistoryRoot(staff, holder.target(), holder.targetName());
+                    else if (slot == 11 || slot == 15) {
+                        boolean appeal = slot == 15;
+                        Optional<Punishment> found = database.get(id);
+                        if (found.isEmpty()) return;
+                        Punishment p = found.get();
+                        if (appeal && (!p.action().equals("BAN") || !staff.hasPermission("punish.remove.ban"))) return;
+                        if (!staff.hasPermission(removalPermission(p.action()))) return;
+                        if (database.revoke(id, appeal ? "APPEAL_ACCEPTED" : "Staff removal", staff.getName(), appeal)) {
+                            staff.sendMessage(color("&aPunishment #" + id + " has been revoked."));
+                            Player target = Bukkit.getPlayer(p.playerUuid());
+                            if (target != null && p.action().equals("MUTE")) {
+                                target.sendMessage(color("&aYour mute has been removed."));
+                            }
+                            staff.closeInventory();
+                        }
+                    }
+                }
+            }
+        } catch (Exception ex) {
+            getLogger().warning("Menu action failed: " + ex.getMessage());
+            staff.sendMessage(color("&cSomething went wrong. Check the console."));
+        }
     }
 
+    private void issue(Player staff, UUID target, String targetName, String category, String offence) {
+        String categoryPermission = category.equals("social") ? "punish.category.social" : "punish.category.moderator";
+        if (!staff.hasPermission(categoryPermission)) {
+            staff.sendMessage(message("no-permission"));
+            return;
+        }
+        try {
+            PunishmentStep step = punishments.nextStep(target, category, offence);
+            if (step == null) return;
+            // Helpers can use the Social menu, but cannot issue any BAN step.
+            if (step.action().equals("BAN") && !staff.hasPermission("punish.category.moderator")) {
+                staff.sendMessage(color("&cYou do not have permission to issue bans."));
+                return;
+            }
 
-    @EventHandler public void onMutedCommand(PlayerCommandPreprocessEvent event) {
+            long now = System.currentTimeMillis();
+            long expiry = step.durationMillis() < 0 ? -1L
+                    : step.durationMillis() == 0 ? now : Math.addExact(now, step.durationMillis());
+            long id = database.issue(target, targetName, category, offence, step.action(),
+                    step.durationMillis(), now, expiry, staff.getUniqueId(), staff.getName());
+
+            staff.sendMessage(color("&aIssued &c" + offence + " &ato &f" + targetName
+                    + " &7(" + actionLabel(step.action()) + ", "
+                    + PunishmentService.formatDuration(step.durationMillis()) + ", #" + id + ")"));
+
+            Player online = Bukkit.getPlayer(target);
+            if (online != null) {
+                switch (step.action()) {
+                    case "MUTE" -> online.sendMessage(color("&cYou have been muted for &f"
+                            + PunishmentService.formatDuration(step.durationMillis()) + "&c. Reason: &f" + offence));
+                    case "BAN" -> online.kickPlayer("You have been banned.\nReason: " + offence
+                            + (step.permanent() ? "\nDuration: Permanent"
+                            : "\nDuration: " + PunishmentService.formatDuration(step.durationMillis())));
+                    case "WARN" -> online.sendMessage(color("&eYou have received a warning. Reason: &f" + offence));
+                }
+            }
+        } catch (SQLException | ArithmeticException ex) {
+            staff.sendMessage(color("&cCould not issue punishment. Check console."));
+            getLogger().severe("Punishment issue failed: " + ex.getMessage());
+        }
+    }
+
+    @EventHandler
+    public void onChat(AsyncChatEvent event) {
+        try {
+            List<Punishment> active = database.activeFor(event.getPlayer().getUniqueId(), "MUTE");
+            if (!active.isEmpty()) {
+                event.setCancelled(true);
+                event.getPlayer().sendMessage(color("&cYou are muted. Reason: &f" + active.getFirst().offence()));
+            }
+        } catch (SQLException ex) {
+            getLogger().warning("Mute lookup failed: " + ex.getMessage());
+        }
+    }
+
+    @EventHandler
+    public void onMutedCommand(PlayerCommandPreprocessEvent event) {
         String message = event.getMessage().toLowerCase(Locale.ROOT).trim();
         String root = message.split("\\s+", 2)[0].replaceFirst("^/", "");
-        if (!Set.of("msg", "tell", "w", "whisper", "message", "reply", "r", "me", "minecraft:msg", "minecraft:tell", "minecraft:w").contains(root)) return;
+        String unnamespaced = root.contains(":") ? root.substring(root.indexOf(':') + 1) : root;
+        List<String> blocked = getConfig().getStringList("settings.muted-blocked-commands");
+        if (!blocked.contains(unnamespaced)) return;
         try {
-            List<Punishment> mutes = database.activeFor(event.getPlayer().getUniqueId(), "MUTE");
-            if (!mutes.isEmpty()) {
+            List<Punishment> active = database.activeFor(event.getPlayer().getUniqueId(), "MUTE");
+            if (!active.isEmpty()) {
                 event.setCancelled(true);
-                event.getPlayer().sendMessage(color("&cYou are muted and cannot use messaging commands. Reason: &f" + mutes.getFirst().offence()));
+                event.getPlayer().sendMessage(color("&cYou are muted and cannot use that command. Reason: &f"
+                        + active.getFirst().offence()));
             }
-        } catch (SQLException ex) { getLogger().warning("Mute command check failed: " + ex.getMessage()); }
+        } catch (SQLException ex) {
+            getLogger().warning("Mute command lookup failed: " + ex.getMessage());
+        }
     }
 
-    @EventHandler public void onPreLogin(AsyncPlayerPreLoginEvent event) {
+    @EventHandler
+    public void onPreLogin(AsyncPlayerPreLoginEvent event) {
         try {
-            List<Punishment> bans = database.activeFor(event.getUniqueId(), "BAN");
-            if (!bans.isEmpty()) {
-                Punishment p = bans.getFirst();
-                String expiry = p.permanent() ? "Permanent" : new Date(p.expiresAt()).toString();
-                event.disallow(AsyncPlayerPreLoginEvent.Result.KICK_BANNED, "You are banned.\nReason: " + p.offence() + "\nExpires: " + expiry);
+            List<Punishment> active = database.activeFor(event.getUniqueId(), "BAN");
+            if (!active.isEmpty()) {
+                Punishment punishment = active.getFirst();
+                String expiry = punishment.permanent() ? "Permanent" : new Date(punishment.expiresAt()).toString();
+                event.disallow(AsyncPlayerPreLoginEvent.Result.KICK_BANNED,
+                        "You are banned.\nReason: " + punishment.offence() + "\nExpires: " + expiry);
             }
-        } catch (SQLException ex) { getLogger().warning("Ban check failed: " + ex.getMessage()); }
+        } catch (SQLException ex) {
+            getLogger().warning("Ban lookup failed: " + ex.getMessage());
+        }
+    }
+
+    private Inventory inventory(MenuHolder holder, int size, String title) {
+        Inventory inventory = Bukkit.createInventory(holder, size, color("&8" + title));
+        holder.inventory(inventory);
+        return inventory;
     }
 
     private ItemStack item(Material material, String name, String... lore) {
-        ItemStack stack = new ItemStack(material); ItemMeta meta = stack.getItemMeta();
-        meta.setDisplayName(color(name)); if (lore.length > 0) meta.setLore(Arrays.stream(lore).map(this::color).toList());
-        stack.setItemMeta(meta); return stack;
+        ItemStack stack = new ItemStack(material);
+        ItemMeta meta = stack.getItemMeta();
+        meta.setDisplayName(color(name));
+        if (lore.length > 0) meta.setLore(Arrays.stream(lore).map(this::color).toList());
+        stack.setItemMeta(meta);
+        return stack;
     }
-    private String color(String text) { return ChatColor.translateAlternateColorCodes('&', text); }
-    private String formatDuration(long ms) {
-        if (ms < 0) return "Permanent"; if (ms == 0) return "Instant";
-        Duration d = Duration.ofMillis(ms); long days = d.toDays(), hours = d.toHoursPart(), minutes = d.toMinutesPart();
-        if (days > 0) return days + "d" + (hours > 0 ? " " + hours + "h" : "");
-        if (d.toHours() > 0) return d.toHours() + "h" + (minutes > 0 ? " " + minutes + "m" : "");
-        return Math.max(1, d.toMinutes()) + "m";
+
+    private String removalPermission(String action) {
+        return switch (action.toUpperCase(Locale.ROOT)) {
+            case "BAN" -> "punish.remove.ban";
+            case "MUTE" -> "punish.remove.mute";
+            default -> "punish.remove.warn";
+        };
+    }
+
+    private String actionLabel(String action) {
+        return switch (action.toUpperCase(Locale.ROOT)) {
+            case "MUTE" -> "Mute";
+            case "BAN" -> "Ban";
+            case "WARN" -> "Warning";
+            default -> action;
+        };
+    }
+
+    private String titleCase(String value) {
+        if (value == null || value.isBlank()) return "";
+        return value.substring(0, 1).toUpperCase(Locale.ROOT) + value.substring(1).toLowerCase(Locale.ROOT);
+    }
+
+    private String message(String key) {
+        return color(getConfig().getString("settings.messages.prefix", "&8[&cPunish&8] &7")
+                + getConfig().getString("settings.messages." + key, "&c" + key));
+    }
+
+    private String color(String input) {
+        return ChatColor.translateAlternateColorCodes('&', input);
     }
 }
