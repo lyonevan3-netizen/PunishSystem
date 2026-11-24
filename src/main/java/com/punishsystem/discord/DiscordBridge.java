@@ -16,6 +16,11 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
+import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.logging.Level;
 
 /** Sends punishment events to the separate Discord bot through a durable SQLite outbox. */
@@ -24,6 +29,8 @@ public final class DiscordBridge {
     private final PunishmentDatabase database;
     private final boolean enabled;
     private final URI endpoint;
+    private final URI linkEndpoint;
+    private final URI rankEndpoint;
     private final String secret;
     private final String serverId;
     private final HttpClient http;
@@ -42,13 +49,15 @@ public final class DiscordBridge {
                 URI candidate = URI.create(base.endsWith("/") ? base : base + "/");
                 // Public integrations must use HTTPS. Local HTTP is intentionally not accepted.
                 if ("https".equalsIgnoreCase(candidate.getScheme()) && candidate.getHost() != null) {
-                    parsed = candidate.resolve("api/v1/punishments");
+                    parsed = candidate;
                 }
             }
         } catch (IllegalArgumentException ignored) {
             // Invalid URL is reported by the startup validation below.
         }
-        this.endpoint = parsed;
+        this.endpoint = parsed == null ? null : parsed.resolve("api/v1/punishments");
+        this.linkEndpoint = parsed == null ? null : parsed.resolve("api/v1/link-codes");
+        this.rankEndpoint = parsed == null ? null : parsed.resolve("api/v1/ranks/sync");
         this.http = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(8))
                 .followRedirects(HttpClient.Redirect.NEVER)
@@ -63,6 +72,47 @@ public final class DiscordBridge {
 
     public boolean enabled() {
         return enabled && endpoint != null && !secret.isBlank() && !secret.equalsIgnoreCase("CHANGE-ME");
+    }
+
+    /** Creates a short-lived, single-use code through the authenticated companion API. */
+    public CompletableFuture<String> createLinkCode(UUID uuid, String username, String publicRank, String staffRank) {
+        if (!enabled()) return CompletableFuture.failedFuture(new IllegalStateException("Discord bridge is disabled"));
+        String payload = "{\"uuid\":" + json(uuid.toString())
+                + ",\"username\":" + json(username)
+                + ",\"publicRank\":" + json(publicRank == null ? "" : publicRank)
+                + ",\"staffRank\":" + json(staffRank == null ? "" : staffRank) + "}";
+        return post(linkEndpoint, payload).thenApply(body -> {
+            Matcher matcher = Pattern.compile("\"code\"\\s*:\\s*\"([A-F0-9]{32})\"").matcher(body);
+            if (!matcher.find()) throw new CompletionException(new IllegalStateException("Link API did not return a code"));
+            return matcher.group(1);
+        });
+    }
+
+    /** LuckPerms remains authoritative; this only mirrors its mapped roles to Discord. */
+    public CompletableFuture<Void> syncRanks(UUID uuid, String username, String publicRank, String staffRank) {
+        if (!enabled()) return CompletableFuture.completedFuture(null);
+        String payload = "{\"uuid\":" + json(uuid.toString())
+                + ",\"username\":" + json(username)
+                + ",\"publicRank\":" + json(publicRank == null ? "" : publicRank)
+                + ",\"staffRank\":" + json(staffRank == null ? "" : staffRank) + "}";
+        return post(rankEndpoint, payload).thenApply(ignored -> null);
+    }
+
+    private CompletableFuture<String> post(URI uri, String payload) {
+        HttpRequest request = HttpRequest.newBuilder(uri)
+                .timeout(Duration.ofSeconds(12))
+                .header("Authorization", "Bearer " + secret)
+                .header("Content-Type", "application/json; charset=utf-8")
+                .header("Accept", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(payload, StandardCharsets.UTF_8))
+                .build();
+        return http.sendAsync(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8))
+                .thenApply(response -> {
+                    if (response.statusCode() < 200 || response.statusCode() >= 300) {
+                        throw new CompletionException(new IllegalStateException("HTTP " + response.statusCode() + ": " + response.body()));
+                    }
+                    return response.body();
+                });
     }
 
     public void enqueue(Punishment punishment) {
@@ -85,6 +135,7 @@ public final class DiscordBridge {
                     + "\"type\":" + json(type) + ","
                     + "\"player\":" + json(punishment.playerName()) + ","
                     + "\"staff\":" + json(punishment.staffName()) + ","
+                    + "\"staffUuid\":" + json(punishment.staffUuid().toString()) + ","
                     + "\"reason\":" + json(punishment.offence()) + ","
                     + "\"duration\":" + json(duration)
                     + (expiresAt == null ? "" : ",\"expiresAt\":" + json(expiresAt))

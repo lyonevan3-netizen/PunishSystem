@@ -4,16 +4,18 @@ plugins {
 }
 
 group = "com.punishsystem"
-version = "1.0.5"
+version = "1.1.0"
 
 repositories {
     mavenCentral()
     maven("https://repo.papermc.io/repository/maven-public/")
+    maven("https://repo.lucko.me/")
 }
 
 dependencies {
     // Paper 26.2 stable API; the plugin only uses Bukkit/Paper public APIs.
     compileOnly("io.papermc.paper:paper-api:26.2.build.129-stable")
+    compileOnly("net.luckperms:api:5.4")
     implementation("org.xerial:sqlite-jdbc:3.50.3.0")
 }
 

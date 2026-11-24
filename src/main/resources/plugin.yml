@@ -1,5 +1,5 @@
 name: PunishSystem
-version: 1.0.5
+version: 1.1.0
 main: com.punishsystem.PunishSystem
 api-version: '26.2'
 author: Server Staff Team
@@ -18,14 +18,14 @@ commands:
   link:
     description: Link your Minecraft account to Discord.
     usage: /link
-    permission: punish.command.link
 permissions:
   punish.command.punish:
     default: op
   punish.command.history:
     default: op
   punish.command.link:
-    default: op
+    description: Generate a one-time Discord account-linking code.
+    default: true
   punish.category.social:
     default: op
   punish.category.moderator:

@@ -59,3 +59,23 @@ discord:
   shared-secret: "CHANGE-ME"
   # Used to make event IDs unique and stable across retries.
   server-id: "Robblestone"
+
+
+# LuckPerms is authoritative. These map primary group names to Discord role keys.
+# Public rank roles are applied in the Main Discord only; staff roles are applied in both servers.
+rank-sync:
+  enabled: true
+  interval-seconds: 300
+  public-groups:
+    everfrost: everfrost
+    celestial: celestial
+    divine: divine
+    elite: elite
+    champion: champion
+  staff-groups:
+    helper: helper
+    mod: mod
+    snrmod: snrmod
+    admin: admin
+    director: director
+    owner: director

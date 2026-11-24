@@ -6,6 +6,9 @@ import com.punishsystem.gui.MenuHolder;
 import com.punishsystem.model.Punishment;
 import com.punishsystem.model.PunishmentStep;
 import com.punishsystem.service.PunishmentService;
+import net.luckperms.api.LuckPerms;
+import net.luckperms.api.LuckPermsProvider;
+import net.luckperms.api.model.user.User;
 import io.papermc.paper.event.player.AsyncChatEvent;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
@@ -20,6 +23,7 @@ import org.bukkit.event.Listener;
 import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.event.player.AsyncPlayerPreLoginEvent;
 import org.bukkit.event.player.PlayerCommandPreprocessEvent;
+import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
@@ -28,11 +32,14 @@ import org.bukkit.plugin.java.JavaPlugin;
 import java.io.File;
 import java.sql.SQLException;
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 
 public final class PunishSystem extends JavaPlugin implements Listener {
     private PunishmentDatabase database;
     private PunishmentService punishments;
     private DiscordBridge discordBridge;
+    private final Map<UUID, String> lastSyncedRanks = new ConcurrentHashMap<>();
 
     @Override
     public void onEnable() {
@@ -66,8 +73,16 @@ public final class PunishSystem extends JavaPlugin implements Listener {
         // Delivery runs asynchronously and uses a durable outbox in the same SQLite file.
         getServer().getScheduler().runTaskTimerAsynchronously(this, discordBridge::deliverPending, 40L, 20L * 10L);
 
+        if (getConfig().getBoolean("rank-sync.enabled", true)) {
+            long interval = Math.max(60L, getConfig().getLong("rank-sync.interval-seconds", 300L));
+            getServer().getScheduler().runTaskTimer(this,
+                    () -> Bukkit.getOnlinePlayers().forEach(player -> syncPlayerRanks(player, false)),
+                    20L * 30L, 20L * interval);
+            getLogger().info("LuckPerms-to-Discord rank reconciliation enabled (every " + interval + " seconds).");
+        }
+
         int count = punishments.definitions().values().stream().mapToInt(Map::size).sum();
-        getLogger().info("PunishSystem 1.0.5 enabled. Loaded " + count + " offence definitions.");
+        getLogger().info("PunishSystem 1.1.0 enabled. Loaded " + count + " offence definitions.");
     }
 
     @Override
@@ -137,8 +152,40 @@ public final class PunishSystem extends JavaPlugin implements Listener {
     private final class LinkCommand implements CommandExecutor {
         @Override
         public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
-            sender.sendMessage(color("&cDiscord linking is not enabled in this build."));
-            sender.sendMessage(color("&7The separate Discord bridge will be added after the core plugin is tested."));
+            if (!(sender instanceof Player player)) {
+                sender.sendMessage("Only a player can link a Minecraft account.");
+                return true;
+            }
+            if (args.length != 0) {
+                player.sendMessage(color("&cUsage: /link"));
+                return true;
+            }
+            if (!discordBridge.enabled()) {
+                player.sendMessage(color("&cDiscord linking is temporarily unavailable. Please try again later."));
+                return true;
+            }
+            player.sendMessage(color("&7Generating your secure Discord link code..."));
+            getServer().getScheduler().runTaskAsynchronously(PunishSystem.this, () -> {
+                String primaryGroup = readPrimaryGroup(player.getUniqueId());
+                String publicRank = mappedRank("rank-sync.public-groups", primaryGroup);
+                String staffRank = mappedRank("rank-sync.staff-groups", primaryGroup);
+                discordBridge.createLinkCode(player.getUniqueId(), player.getName(), publicRank, staffRank)
+                        .whenComplete((code, error) -> getServer().getScheduler().runTask(PunishSystem.this, () -> {
+                            if (!player.isOnline()) return;
+                            if (error != null) {
+                                player.sendMessage(color("&cCould not create a link code. Please try again shortly."));
+                                getLogger().warning("Could not create Discord link code for " + player.getUniqueId() + ": " + error.getMessage());
+                                return;
+                            }
+                            player.sendMessage(color("&8&m----------------------------------------"));
+                            player.sendMessage(color("&a&lDISCORD ACCOUNT LINK"));
+                            player.sendMessage(color("&7In Discord, use &f/link code:"));
+                            player.sendMessage(color("&b&l" + code));
+                            player.sendMessage(color("&7This code expires in 10 minutes and can only be used once."));
+                            player.sendMessage(color("&cDo not share this code with anyone."));
+                            player.sendMessage(color("&8&m----------------------------------------"));
+                        }));
+            });
             return true;
         }
     }
@@ -548,6 +595,57 @@ public final class PunishSystem extends JavaPlugin implements Listener {
             staff.sendMessage(color("&cCould not issue punishment. Check console."));
             getLogger().severe("Punishment issue failed: " + ex.getMessage());
         }
+    }
+
+    @EventHandler
+    public void onPlayerJoin(PlayerJoinEvent event) {
+        // A join also reconciles players who changed rank while offline.
+        syncPlayerRanks(event.getPlayer(), true);
+    }
+
+    private void syncPlayerRanks(Player player, boolean force) {
+        if (!discordBridge.enabled() || !getConfig().getBoolean("rank-sync.enabled", true)) return;
+        if (!Bukkit.getPluginManager().isPluginEnabled("LuckPerms")) return;
+        final UUID uuid = player.getUniqueId();
+        try {
+            LuckPerms luckPerms = LuckPermsProvider.get();
+            CompletableFuture<User> userFuture = luckPerms.getUserManager().loadUser(uuid);
+            userFuture.thenAccept(user -> {
+                String group = user.getPrimaryGroup().toLowerCase(Locale.ROOT);
+                String publicRank = mappedRank("rank-sync.public-groups", group);
+                String staffRank = mappedRank("rank-sync.staff-groups", group);
+                String fingerprint = group + "|" + publicRank + "|" + staffRank;
+                if (!force && fingerprint.equals(lastSyncedRanks.get(uuid))) return;
+                discordBridge.syncRanks(uuid, player.getName(), publicRank, staffRank)
+                        .thenRun(() -> lastSyncedRanks.put(uuid, fingerprint))
+                        .exceptionally(error -> {
+                            lastSyncedRanks.remove(uuid);
+                            getLogger().warning("Discord rank sync failed for " + player.getName() + ": " + error.getMessage());
+                            return null;
+                        });
+            }).exceptionally(error -> {
+                getLogger().warning("Could not load LuckPerms data for " + player.getName() + ": " + error.getMessage());
+                return null;
+            });
+        } catch (IllegalStateException ex) {
+            getLogger().warning("LuckPerms API is unavailable; Discord rank sync will retry on the next reconciliation.");
+        }
+    }
+
+    private String readPrimaryGroup(UUID uuid) {
+        if (!Bukkit.getPluginManager().isPluginEnabled("LuckPerms")) return "";
+        try {
+            User user = LuckPermsProvider.get().getUserManager().getUser(uuid);
+            return user == null ? "" : user.getPrimaryGroup().toLowerCase(Locale.ROOT);
+        } catch (IllegalStateException ex) {
+            return "";
+        }
+    }
+
+    private String mappedRank(String path, String group) {
+        if (group == null || group.isBlank()) return "";
+        String mapped = getConfig().getString(path + "." + group, "");
+        return mapped == null ? "" : mapped.trim().toLowerCase(Locale.ROOT);
     }
 
     @EventHandler
