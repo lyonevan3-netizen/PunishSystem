@@ -1,11 +1,11 @@
-# PunishSystem 1.1.0
+# PunishSystem 1.1.1
 
 A Paper-compatible punishment plugin for Minecraft 26.2 / Java 25, with SQLite punishment history, configurable escalation, Discord punishment logging, self-service account linking, and LuckPerms-to-Discord role synchronisation.
 
 ## Included
 
 - `/punish <player>` and `/history <player>` (`/hist`) with the existing staff permission nodes and menus.
-- `/link` is self-service and available to every player. It requests a one-time 32-character hexadecimal Discord code from the companion bot; the code expires after 10 minutes.
+- `/link` is self-service and available to every player. It requests a one-time six-digit numeric Discord code from the companion bot; the code expires after 5 minutes and is single-use.
 - Discord `/link code:<code>` redeems the code. Discord `/unlink` removes the account association and only the roles managed by this integration.
 - LuckPerms primary-group mapping is configurable in `config.yml`. Public rank roles are intended for Main Discord only; staff roles are intended for both Discord servers.
 - Online players are reconciled on join and every configured interval. LuckPerms remains authoritative; Discord roles do not grant Minecraft permissions.
@@ -20,7 +20,7 @@ Requires Java 25 and Gradle 9.1+:
 gradle clean build
 ```
 
-The plugin JAR is `build/libs/PunishSystem-1.1.0.jar`.
+The plugin JAR is `build/libs/PunishSystem-1.1.1.jar`.
 
 ## Discord companion bot
 

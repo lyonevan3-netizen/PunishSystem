@@ -82,7 +82,7 @@ public final class DiscordBridge {
                 + ",\"publicRank\":" + json(publicRank == null ? "" : publicRank)
                 + ",\"staffRank\":" + json(staffRank == null ? "" : staffRank) + "}";
         return post(linkEndpoint, payload).thenApply(body -> {
-            Matcher matcher = Pattern.compile("\"code\"\\s*:\\s*\"([A-F0-9]{32})\"").matcher(body);
+            Matcher matcher = Pattern.compile("\"code\"\\s*:\\s*\"([0-9]{6})\"").matcher(body);
             if (!matcher.find()) throw new CompletionException(new IllegalStateException("Link API did not return a code"));
             return matcher.group(1);
         });

@@ -82,7 +82,7 @@ public final class PunishSystem extends JavaPlugin implements Listener {
         }
 
         int count = punishments.definitions().values().stream().mapToInt(Map::size).sum();
-        getLogger().info("PunishSystem 1.1.0 enabled. Loaded " + count + " offence definitions.");
+        getLogger().info("PunishSystem 1.1.1 enabled. Loaded " + count + " offence definitions.");
     }
 
     @Override
@@ -181,7 +181,7 @@ public final class PunishSystem extends JavaPlugin implements Listener {
                             player.sendMessage(color("&a&lDISCORD ACCOUNT LINK"));
                             player.sendMessage(color("&7In Discord, use &f/link code:"));
                             player.sendMessage(color("&b&l" + code));
-                            player.sendMessage(color("&7This code expires in 10 minutes and can only be used once."));
+                            player.sendMessage(color("&7This code expires in 5 minutes and can only be used once."));
                             player.sendMessage(color("&cDo not share this code with anyone."));
                             player.sendMessage(color("&8&m----------------------------------------"));
                         }));
