@@ -40,6 +40,17 @@ public final class PunishmentDatabase implements AutoCloseable {
                 """);
             s.executeUpdate("CREATE INDEX IF NOT EXISTS idx_punish_player_action ON punishments(player_uuid, action, issued_at)");
             s.executeUpdate("CREATE INDEX IF NOT EXISTS idx_punish_escalation ON punishments(player_uuid, category, offence)");
+            // Durable Discord outbox. This is additive and does not alter existing punishment rows.
+            s.executeUpdate("""
+                CREATE TABLE IF NOT EXISTS discord_outbox (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    event_id TEXT NOT NULL UNIQUE,
+                    payload_json TEXT NOT NULL,
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    next_attempt_at INTEGER NOT NULL DEFAULT 0,
+                    created_at INTEGER NOT NULL
+                )
+                """);
         }
     }
 
@@ -174,6 +185,54 @@ public final class PunishmentDatabase implements AutoCloseable {
                 WHERE status='ACTIVE' AND duration_ms>=0 AND expires_at<=? AND action!='WARN'
                 """)) {
             p.setLong(1, System.currentTimeMillis());
+            p.executeUpdate();
+        }
+    }
+
+
+    public record OutboxEntry(long id, String payloadJson, int attempts) {}
+
+    public synchronized void queueDiscordEvent(String eventId, String payloadJson) throws SQLException {
+        try (PreparedStatement p = connection.prepareStatement("""
+                INSERT OR IGNORE INTO discord_outbox(event_id, payload_json, attempts, next_attempt_at, created_at)
+                VALUES(?,?,0,0,?)
+                """)) {
+            p.setString(1, eventId);
+            p.setString(2, payloadJson);
+            p.setLong(3, System.currentTimeMillis());
+            p.executeUpdate();
+        }
+    }
+
+    public synchronized List<OutboxEntry> pendingDiscordEvents(int limit) throws SQLException {
+        List<OutboxEntry> entries = new ArrayList<>();
+        try (PreparedStatement p = connection.prepareStatement("""
+                SELECT id, payload_json, attempts FROM discord_outbox
+                WHERE next_attempt_at<=? ORDER BY id ASC LIMIT ?
+                """)) {
+            p.setLong(1, System.currentTimeMillis());
+            p.setInt(2, Math.max(1, Math.min(25, limit)));
+            try (ResultSet r = p.executeQuery()) {
+                while (r.next()) entries.add(new OutboxEntry(r.getLong(1), r.getString(2), r.getInt(3)));
+            }
+        }
+        return entries;
+    }
+
+    public synchronized void completeDiscordEvent(long id) throws SQLException {
+        try (PreparedStatement p = connection.prepareStatement("DELETE FROM discord_outbox WHERE id=?")) {
+            p.setLong(1, id);
+            p.executeUpdate();
+        }
+    }
+
+    public synchronized void retryDiscordEvent(long id, int attempts, long nextAttemptAt) throws SQLException {
+        try (PreparedStatement p = connection.prepareStatement("""
+                UPDATE discord_outbox SET attempts=?, next_attempt_at=? WHERE id=?
+                """)) {
+            p.setInt(1, attempts);
+            p.setLong(2, nextAttemptAt);
+            p.setLong(3, id);
             p.executeUpdate();
         }
     }

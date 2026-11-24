@@ -50,11 +50,12 @@ punishments:
     Duping: ["BAN:PERM"]
 
 discord:
+  # Enable only after your Discord bot is hosted and reachable over HTTPS.
   enabled: false
-  # Reserved for the separate Discord bridge/bot integration stage.
-  bot-url: "http://127.0.0.1:8765"
+  # Base URL only; the plugin appends /api/v1/punishments.
+  bot-url: "https://YOUR-BOT-DOMAIN"
+  # Must exactly match API_SECRET in the bot host's private environment variables.
+  # Never share this value in chat, screenshots, or GitHub.
   shared-secret: "CHANGE-ME"
-  channels:
-    all: ""
-    mutes: ""
-    bans: ""
+  # Used to make event IDs unique and stable across retries.
+  server-id: "Robblestone"

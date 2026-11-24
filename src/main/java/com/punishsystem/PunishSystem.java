@@ -1,6 +1,7 @@
 package com.punishsystem;
 
 import com.punishsystem.db.PunishmentDatabase;
+import com.punishsystem.discord.DiscordBridge;
 import com.punishsystem.gui.MenuHolder;
 import com.punishsystem.model.Punishment;
 import com.punishsystem.model.PunishmentStep;
@@ -31,6 +32,7 @@ import java.util.*;
 public final class PunishSystem extends JavaPlugin implements Listener {
     private PunishmentDatabase database;
     private PunishmentService punishments;
+    private DiscordBridge discordBridge;
 
     @Override
     public void onEnable() {
@@ -46,6 +48,7 @@ public final class PunishSystem extends JavaPlugin implements Listener {
 
         punishments = new PunishmentService(database);
         punishments.load(getConfig());
+        discordBridge = new DiscordBridge(this, database, getConfig());
 
         Objects.requireNonNull(getCommand("punish")).setExecutor(new PunishCommand());
         Objects.requireNonNull(getCommand("history")).setExecutor(new HistoryCommand());
@@ -60,8 +63,11 @@ public final class PunishSystem extends JavaPlugin implements Listener {
             }
         }, 20L, 20L * 60L);
 
+        // Delivery runs asynchronously and uses a durable outbox in the same SQLite file.
+        getServer().getScheduler().runTaskTimerAsynchronously(this, discordBridge::deliverPending, 40L, 20L * 10L);
+
         int count = punishments.definitions().values().stream().mapToInt(Map::size).sum();
-        getLogger().info("PunishSystem 1.0.4 enabled. Loaded " + count + " offence definitions.");
+        getLogger().info("PunishSystem 1.0.5 enabled. Loaded " + count + " offence definitions.");
     }
 
     @Override
@@ -501,6 +507,12 @@ public final class PunishSystem extends JavaPlugin implements Listener {
                     : step.durationMillis() == 0 ? now : Math.addExact(now, step.durationMillis());
             long id = database.issue(target, targetName, category, offence, step.action(),
                     step.durationMillis(), now, expiry, staff.getUniqueId(), staff.getName());
+
+            // Queue only after the punishment is safely committed to the local database.
+            // The Discord bridge never controls or delays the actual Minecraft punishment.
+            discordBridge.enqueue(new Punishment(id, target, targetName, category, offence, step.action(),
+                    step.durationMillis(), now, expiry, staff.getUniqueId(), staff.getName(),
+                    "ACTIVE", null, null, 0L));
 
             staff.sendMessage(color("&aIssued &c" + offence + " &ato &f" + targetName
                     + " &7(" + actionLabel(step.action()) + ", "
